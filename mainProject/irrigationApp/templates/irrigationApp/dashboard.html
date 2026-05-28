@@ -1,0 +1,505 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Irrigation Control</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background: #f3f4f6;
+        margin: 0;
+        padding: 30px;
+      }
+
+      .container {
+        max-width: 650px;
+        margin: auto;
+        background: white;
+        padding: 30px;
+        border-radius: 16px;
+        box-shadow: 0 8px 25px rgba(0, 0, 0, 0.08);
+      }
+
+      h1,
+      h2,
+      h3 {
+        text-align: center;
+        margin-top: 0;
+      }
+
+      .status {
+        text-align: center;
+        margin-bottom: 20px;
+      }
+
+      .mode {
+        text-align: center;
+        font-size: 20px;
+        font-weight: bold;
+        margin-bottom: 20px;
+      }
+
+      .button-row {
+        display: flex;
+        gap: 12px;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-bottom: 25px;
+      }
+
+      button {
+        border: none;
+        padding: 12px 20px;
+        border-radius: 8px;
+        color: white;
+        font-size: 15px;
+        cursor: pointer;
+        font-weight: bold;
+      }
+
+      .btn-auto {
+        background: #2563eb;
+      }
+
+      .btn-manual {
+        background: #7c3aed;
+      }
+
+      .btn-save {
+        background: #111827;
+        width: 100%;
+        margin-top: 15px;
+      }
+
+      .btn-on {
+        background: #16a34a;
+      }
+
+      .btn-off {
+        background: #dc2626;
+      }
+
+      .card {
+        border: 1px solid #ddd;
+        padding: 20px;
+        border-radius: 12px;
+        margin-top: 20px;
+        background: #fafafa;
+      }
+
+      label {
+        display: block;
+        font-weight: bold;
+        margin-top: 12px;
+        margin-bottom: 6px;
+      }
+
+      input {
+        width: 100%;
+        padding: 11px;
+        box-sizing: border-box;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        font-size: 15px;
+      }
+
+      .help-text {
+        font-size: 13px;
+        color: #555;
+        margin-top: 8px;
+        line-height: 1.5;
+      }
+
+      .summary {
+        text-align: center;
+        font-size: 14px;
+        color: #333;
+        margin-top: 20px;
+        line-height: 1.6;
+      }
+
+      details {
+        margin-top: 20px;
+        border: 1px dashed #ccc;
+        border-radius: 10px;
+        padding: 15px;
+        background: #fff;
+      }
+
+      summary {
+        cursor: pointer;
+        font-weight: bold;
+        color: #444;
+      }
+
+      code {
+        background: #eee;
+        padding: 3px 7px;
+        border-radius: 5px;
+      }
+
+      @media (max-width: 600px) {
+        body {
+          padding: 15px;
+        }
+
+        .container {
+          padding: 20px;
+        }
+
+        .button-row {
+          flex-direction: column;
+        }
+
+        button {
+          width: 100%;
+        }
+      }
+      @media (max-width: 600px) {
+        body {
+          padding: 10px;
+        }
+
+        .container {
+          padding: 18px;
+          border-radius: 12px;
+        }
+
+        h1 {
+          font-size: 26px;
+        }
+
+        h2 {
+          font-size: 21px;
+        }
+
+        .mode {
+          font-size: 17px;
+        }
+
+        .card {
+          padding: 16px;
+        }
+
+        .button-row {
+          flex-direction: column;
+          gap: 10px;
+        }
+
+        button {
+          width: 100%;
+          padding: 14px;
+          font-size: 15px;
+        }
+
+        input {
+          font-size: 16px;
+          padding: 13px;
+        }
+
+        .help-text,
+        .summary {
+          font-size: 13px;
+          text-align: left;
+        }
+
+        details {
+          padding: 14px;
+        }
+      }
+
+      .time-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .time-row select {
+        padding: 11px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        font-size: 15px;
+      }
+
+      .time-row span {
+        font-weight: bold;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <h1>Irrigation Control</h1>
+
+      <div class="status">
+        Device Status:
+        <span
+          id="device-dot"
+          style="color: {% if is_device_online %}green{% else %}red{% endif %}; font-weight: bold;"
+          >●</span
+        >
+        <span id="device-text">
+          {% if is_device_online %}Connected{% else %}Offline{% endif %}
+        </span>
+      </div>
+
+      <div class="mode">Current Mode: {{ control.mode }}</div>
+
+      <form method="POST">
+        {% csrf_token %}
+
+        <div class="button-row">
+          <button class="btn-auto" type="submit" name="mode" value="AUTO">
+            Auto Mode
+          </button>
+
+          <button class="btn-manual" type="submit" name="mode" value="MANUAL">
+            Manual Timer
+          </button>
+        </div>
+
+        <div class="card">
+          <h2>Auto Mode Settings</h2>
+
+          <h2>Auto Watering</h2>
+
+          <label>Water Every (hours)</label>
+          <input
+            id="autoEvery"
+            type="number"
+            name="auto_closed_hours"
+            min="1"
+            value="{{ auto_closed_hours }}"
+            required
+          />
+
+          <!-- TESTING ONLY: uncomment this and comment out the hours input above -->
+
+          {% comment %} <label>Water Every (seconds) - Testing Only</label>
+          <input
+            id="autoEvery"
+            type="number"
+            name="auto_closed_seconds"
+            value="{{ auto_closed_seconds }}"
+            min="1"
+            required
+          />
+          {% endcomment %}
+
+          <label>Water For (seconds)</label>
+          <input
+            id="autoFor"
+            type="number"
+            name="auto_open_time"
+            min="1"
+            value="{{ control.auto_open_time }}"
+            required
+          />
+
+          {% comment %}
+          <p class="help-text">
+            Example: Water every
+            <span id="exampleEvery">{{ auto_closed_seconds }}</span>
+            seconds for
+            <span id="exampleFor">{{ control.auto_open_time }}</span>
+            seconds.
+          </p>
+          {% endcomment %}
+
+          <p class="help-text">
+            Example: Water every
+            <span id="exampleEvery">{{ auto_closed_hours }}</span>
+            hours for
+            <span id="exampleFor">{{ control.auto_open_time }}</span>
+            seconds.
+          </p>
+
+          <p class="help-text">
+            Auto mode means the valve stays closed first, opens briefly for
+            watering, then closes again and repeats.
+          </p>
+
+          <button class="btn-save" type="submit">Save Auto Settings</button>
+        </div>
+
+        <div class="card">
+          <h2>Manual Timer Settings</h2>
+
+          <label>Morning Watering Time</label>
+          <div class="time-row">
+            <select name="morning_hour" required>
+              <option value="01">01</option>
+              <option value="02">02</option>
+              <option value="03">03</option>
+              <option value="04">04</option>
+              <option value="05">05</option>
+              <option value="06">06</option>
+              <option value="07">07</option>
+              <option value="08">08</option>
+              <option value="09">09</option>
+              <option value="10">10</option>
+              <option value="11">11</option>
+            </select>
+
+            <input
+              type="number"
+              name="morning_minute"
+              min="0"
+              max="59"
+              value="{{ morning_minute }}"
+              onfocus="this.value = ''"
+              required
+            />
+
+            <span>AM</span>
+          </div>
+
+          <label>Afternoon Watering Time</label>
+          <div class="time-row">
+            <select name="afternoon_hour" required>
+              <option value="12">12</option>
+              <option value="01">01</option>
+              <option value="02">02</option>
+              <option value="03">03</option>
+              <option value="04">04</option>
+              <option value="05">05</option>
+              <option value="06">06</option>
+              <option value="07">07</option>
+              <option value="08">08</option>
+              <option value="09">09</option>
+              <option value="10">10</option>
+              <option value="11">11</option>
+            </select>
+
+            <input
+              type="number"
+              name="afternoon_minute"
+              min="0"
+              max="59"
+              value="{{ afternoon_minute }}"
+              onfocus="this.value = ''"
+              required
+            />
+
+            <span>PM</span>
+          </div>
+
+          <label>Water For (seconds)</label>
+          <input
+            type="number"
+            name="manual_open_time"
+            min="1"
+            value="{{ control.manual_open_time }}"
+            onfocus="this.value = ''"
+            required
+          />
+
+          <p class="help-text">
+            Manual Timer performs the watering action at the selected morning
+            and afternoon times. The action is: closed first, then open for
+            watering, then closed again.
+          </p>
+          <p class="help-text">
+            Current manual schedule: waters at
+            <b>{{ control.manual_morning_time|time:'h:i A' }}</b>
+            and
+            <b>{{ control.manual_afternoon_time|time:'h:i A' }}</b>
+            for
+            <b>{{ control.manual_open_time }}</b>
+            seconds.
+          </p>
+
+          <button class="btn-save" type="submit">
+            Save Manual Timer Settings
+          </button>
+        </div>
+
+        <details id="debugDetails">
+          <summary>Debug Controls</summary>
+
+          <p class="help-text">
+            Use these only for testing the relay or LED simulation.
+          </p>
+
+          <div class="button-row">
+            <button class="btn-on" type="submit" name="mode" value="ON">
+              Force Open Valve
+            </button>
+
+            <button class="btn-off" type="submit" name="mode" value="OFF">
+              Force Close Valve
+            </button>
+          </div>
+        </details>
+      </form>
+
+      <div class="summary">
+        <p>{{ auto_mode_text }}</p>
+        <p>{{ manual_mode_text }}</p>
+        <p>ESP32 API: <code>/api/command/</code></p>
+      </div>
+    </div>
+
+    <script>
+      function updateDeviceStatus() {
+        fetch("/api/device-status/")
+          .then((response) => response.json())
+          .then((data) => {
+            const dot = document.getElementById("device-dot");
+            const text = document.getElementById("device-text");
+
+            if (data.online) {
+              dot.style.color = "green";
+              text.textContent = "Connected";
+            } else {
+              dot.style.color = "red";
+              text.textContent = "Offline";
+            }
+          })
+          .catch(() => {
+            const dot = document.getElementById("device-dot");
+            const text = document.getElementById("device-text");
+
+            dot.style.color = "red";
+            text.textContent = "Offline";
+          });
+      }
+
+      updateDeviceStatus();
+      setInterval(updateDeviceStatus, 2000);
+
+      document.querySelectorAll("form").forEach((form) => {
+        form.addEventListener("submit", () => {
+          localStorage.setItem("scrollPosition", window.scrollY);
+        });
+      });
+
+      window.addEventListener("load", () => {
+        const scrollPosition = localStorage.getItem("scrollPosition");
+
+        if (scrollPosition !== null) {
+          window.scrollTo(0, parseInt(scrollPosition));
+          localStorage.removeItem("scrollPosition");
+        }
+      });
+
+      const debugDetails = document.getElementById("debugDetails");
+
+      debugDetails.addEventListener("toggle", () => {
+        localStorage.setItem("debugOpen", debugDetails.open ? "true" : "false");
+      });
+
+      window.addEventListener("load", () => {
+        if (localStorage.getItem("debugOpen") === "true") {
+          debugDetails.open = true;
+        }
+      });
+    </script>
+  </body>
+</html>
