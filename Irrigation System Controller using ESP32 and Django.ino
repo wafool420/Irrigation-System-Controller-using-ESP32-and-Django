@@ -1,148 +1,86 @@
 #include <WiFi.h>
 #include <WebServer.h>
-#include <DNSServer.h>
 #include <Preferences.h>
-#include "esp_wifi.h"
 #include <HTTPClient.h>
+#include <DNSServer.h>
 
-// =====================================================
-// OUTPUT MODE TOGGLES
-// =====================================================
+// =====================
+// RELAY SETTINGS
+// =====================
+const int RELAY_PIN = 26;
+const bool RELAY_ACTIVE_LOW = true;
 
-// Keep this true while testing with LEDs
-#define USE_LED_SIMULATION true
-
-// Change this to true when using real relay + solenoid
-#define USE_REAL_RELAY true
-
-// =====================================================
-// PIN SETTINGS
-// =====================================================
-
-// ESP32-C3 SuperMini:
-// D3 = GPIO5
-// D4 = GPIO6
-#define SOLENOID_ON_LED_PIN   5   // Red LED = valve open / watering
-#define SOLENOID_OFF_LED_PIN  6   // Yellow LED = valve closed / idle
-
-// Change this depending on your real board.
-// ESP32-C3 SuperMini usually does NOT have GPIO26.
-#define RELAY_PIN 26
-
-// Most relay modules are active LOW:
-// LOW  = relay ON
-// HIGH = relay OFF
-#define RELAY_ACTIVE_LOW true
-
-// Optional WiFi LEDs. Change pins if unused.
-#define WIFI_OK_LED_PIN       7
-#define WIFI_FAIL_LED_PIN     8
-
-// =====================================================
-// DJANGO CONTROL SETTINGS
-// =====================================================
-
-// Replace this with your PC/laptop IP address
-String djangoCommandUrl = "http://192.168.0.100:8000/api/command/";
+// =====================
+// DJANGO SETTINGS
+// =====================
+String djangoCommandUrl = "http://10.141.92.83:8000/api/command/";
 
 const unsigned long DJANGO_POLL_INTERVAL = 3000;
 unsigned long lastDjangoPoll = 0;
 
-// =====================================================
-// SYSTEM STATES
-// =====================================================
-
-String currentMode = "OFF";
-bool isValveOpen = false;
-
-// AUTO mode timing
-unsigned long autoClosedTime = 3600;  // seconds
-unsigned long autoOpenTime = 20;      // seconds
-
-bool autoValveOpenPhase = false;      // false = closed/waiting, true = watering/open
-unsigned long autoPreviousMillis = 0;
-
-// =====================================================
-// ESP32 HOTSPOT / WIFI CONFIG
-// =====================================================
-
-String apSsid = "C3-Config";
+// =====================
+// WIFI PORTAL SETTINGS
+// =====================
+String apSsid = "Irrigation-Config";
 String apPass = "12345678";
 
 IPAddress apIP(192, 168, 4, 1);
+DNSServer dnsServer;
 const byte DNS_PORT = 53;
 
 WebServer server(80);
-DNSServer dns;
 Preferences prefs;
 
-String networksHTML = "";
-bool inConfigMode = false;
+// The portal is now always active
+bool portalAlwaysOn = true;
 
-// =====================================================
-// OUTPUT CONTROL
-// =====================================================
+// =====================
+// WIFI RECONNECT SETTINGS
+// =====================
+const unsigned long WIFI_RECONNECT_INTERVAL = 10000;
+unsigned long lastWifiReconnectAttempt = 0;
 
-void setRelay(bool valveOpen) {
-#if USE_REAL_RELAY
+// =====================
+// STATE
+// =====================
+String currentMode = "OFF";
+
+unsigned long autoClosedTime = 3600;
+unsigned long autoOpenTime = 20;
+
+bool valveOpen = false;
+bool autoOpenPhase = false;
+unsigned long autoPreviousMillis = 0;
+
+// =====================
+// RELAY CONTROL
+// =====================
+void setRelay(bool openValve) {
+  valveOpen = openValve;
+
   if (RELAY_ACTIVE_LOW) {
-    digitalWrite(RELAY_PIN, valveOpen ? LOW : HIGH);
+    digitalWrite(RELAY_PIN, openValve ? LOW : HIGH);
   } else {
-    digitalWrite(RELAY_PIN, valveOpen ? HIGH : LOW);
+    digitalWrite(RELAY_PIN, openValve ? HIGH : LOW);
   }
-#endif
+
+  Serial.print("VALVE: ");
+  Serial.println(openValve ? "OPEN / WATERING" : "CLOSED / IDLE");
 }
 
-void setLedSimulation(bool valveOpen) {
-#if USE_LED_SIMULATION
-  digitalWrite(SOLENOID_ON_LED_PIN, valveOpen ? HIGH : LOW);
-  digitalWrite(SOLENOID_OFF_LED_PIN, valveOpen ? LOW : HIGH);
-#endif
-}
-
-void setValveOutput(bool valveOpen) {
-  isValveOpen = valveOpen;
-
-  setLedSimulation(valveOpen);
-  setRelay(valveOpen);
-
-  if (valveOpen) {
-    Serial.println("VALVE STATE: OPEN / WATERING");
-    Serial.println("LED STATE: RED ON, YELLOW OFF");
-  } else {
-    Serial.println("VALVE STATE: CLOSED / IDLE");
-    Serial.println("LED STATE: RED OFF, YELLOW ON");
-  }
-}
-
-// =====================================================
-// WIFI LED STATUS
-// =====================================================
-
-void updateWiFiLeds() {
-  if (WiFi.status() == WL_CONNECTED && !inConfigMode) {
-    digitalWrite(WIFI_OK_LED_PIN, HIGH);
-    digitalWrite(WIFI_FAIL_LED_PIN, LOW);
-  } else {
-    digitalWrite(WIFI_OK_LED_PIN, LOW);
-    digitalWrite(WIFI_FAIL_LED_PIN, HIGH);
-  }
-}
-
-// =====================================================
-// ROUTER WIFI MEMORY
-// =====================================================
-
+// =====================
+// WIFI MEMORY
+// =====================
 void saveWifi(const String &ssid, const String &pass) {
   prefs.begin("wifi", false);
   prefs.putString("ssid", ssid);
   prefs.putString("pass", pass);
   prefs.end();
 
-  Serial.println("Router WiFi saved.");
+  Serial.println("WiFi saved.");
 }
 
-bool loadSavedWifi(String &ssid, String &pass) {
+bool loadWifi(String &ssid, String &pass) {
   prefs.begin("wifi", true);
   ssid = prefs.getString("ssid", "");
   pass = prefs.getString("pass", "");
@@ -151,564 +89,83 @@ bool loadSavedWifi(String &ssid, String &pass) {
   ssid.trim();
   pass.trim();
 
-  if (ssid.length() == 0) {
-    Serial.println("No saved router WiFi.");
-    return false;
-  }
-
-  Serial.print("Loaded saved router WiFi: ");
-  Serial.println(ssid);
-  return true;
+  return ssid.length() > 0;
 }
 
-void clearSavedWifi() {
+void clearWifi() {
   prefs.begin("wifi", false);
   prefs.clear();
   prefs.end();
 
-  Serial.println("Saved router WiFi cleared.");
+  Serial.println("Saved WiFi cleared.");
 }
 
-// =====================================================
-// ESP32 HOTSPOT MEMORY
-// =====================================================
-
-void loadApConfig() {
-  prefs.begin("ap", true);
-  apSsid = prefs.getString("ssid", "C3-Config");
-  apPass = prefs.getString("pass", "12345678");
+// =====================
+// HOTSPOT PASSWORD MEMORY
+// =====================
+void saveHotspotPassword(const String &newPass) {
+  prefs.begin("portal", false);
+  prefs.putString("ap_pass", newPass);
   prefs.end();
 
-  apSsid.trim();
+  apPass = newPass;
   apPass.trim();
 
-  if (apSsid.length() == 0) {
-    apSsid = "C3-Config";
-  }
-
-  if (apPass.length() < 8) {
-    apPass = "12345678";
-  }
-
-  Serial.println("Loaded ESP32 hotspot config:");
-  Serial.print("Hotspot SSID: ");
-  Serial.println(apSsid);
-  Serial.print("Hotspot Password: ");
+  Serial.println("Hotspot password saved:");
   Serial.println(apPass);
 }
 
-void saveApConfig(const String &ssid, const String &pass) {
-  String newSsid = ssid;
-  String newPass = pass;
-
-  newSsid.trim();
-  newPass.trim();
-
-  if (newSsid.length() == 0) {
-    newSsid = "C3-Config";
-  }
-
-  if (newPass.length() < 8) {
-    newPass = "12345678";
-  }
-
-  prefs.begin("ap", false);
-  prefs.putString("ssid", newSsid);
-  prefs.putString("pass", newPass);
+void loadHotspotPassword() {
+  prefs.begin("portal", true);
+  String savedPass = prefs.getString("ap_pass", "");
   prefs.end();
 
-  apSsid = newSsid;
-  apPass = newPass;
+  savedPass.trim();
 
-  Serial.println("ESP32 hotspot config saved.");
-}
-
-// =====================================================
-// WIFI CONNECT
-// =====================================================
-
-bool connectWiFiWith(const String &ssid, const String &pass, bool keepAP) {
-  WiFi.disconnect(true, true);
-  delay(300);
-
-  WiFi.mode(keepAP ? WIFI_AP_STA : WIFI_STA);
-  WiFi.setSleep(false);
-  WiFi.setAutoReconnect(true);
-  WiFi.persistent(false);
-
-  esp_wifi_set_ps(WIFI_PS_NONE);
-  esp_wifi_set_max_tx_power(78);
-
-  const int MAX_ATTEMPTS = 3;
-
-  for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    Serial.print("Connecting to ");
-    Serial.print(ssid);
-    Serial.print(" attempt ");
-    Serial.println(attempt);
-
-    WiFi.begin(ssid.c_str(), pass.c_str());
-
-    unsigned long start = millis();
-
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
-      updateWiFiLeds();
-      Serial.print(".");
-      delay(500);
-    }
-
-    Serial.println();
-
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("Router WiFi connected!");
-      Serial.print("IP Address: ");
-      Serial.println(WiFi.localIP());
-
-      updateWiFiLeds();
-      return true;
-    }
-
-    Serial.println("Router WiFi failed.");
-    updateWiFiLeds();
-    delay(1000);
+  if (savedPass.length() >= 8) {
+    apPass = savedPass;
   }
 
-  updateWiFiLeds();
-  return false;
-}
-
-bool connectSavedWifi() {
-  String ssid, pass;
-
-  if (!loadSavedWifi(ssid, pass)) {
-    return false;
-  }
-
-  return connectWiFiWith(ssid, pass, false);
-}
-
-// =====================================================
-// WIFI SCAN
-// =====================================================
-
-void buildNetworksList() {
-  Serial.println("Scanning WiFi networks...");
-
-  networksHTML = "";
-
-  int n = WiFi.scanNetworks();
-
-  if (n <= 0) {
-    networksHTML = "<option value=''>No networks found</option>";
-    Serial.println("No networks found.");
-  } else {
-    for (int i = 0; i < n; i++) {
-      String ssid = WiFi.SSID(i);
-
-      if (ssid.length() == 0) continue;
-
-      networksHTML += "<option value='";
-      networksHTML += ssid;
-      networksHTML += "'>";
-      networksHTML += ssid;
-      networksHTML += "</option>";
-    }
-  }
-
-  WiFi.scanDelete();
-}
-
-// =====================================================
-// CAPTIVE PORTAL REDIRECT
-// =====================================================
-
-void redirectToPortal() {
-  server.sendHeader("Location", "http://192.168.4.1/", true);
-  server.send(302, "text/plain", "");
-}
-
-// =====================================================
-// HTML PAGES
-// =====================================================
-
-String buildPortalHtml() {
-  if (networksHTML.length() == 0) {
-    buildNetworksList();
-  }
-
-  String html =
-    "<!DOCTYPE html><html lang='en'>"
-    "<head><meta charset='UTF-8'/>"
-    "<meta name='viewport' content='width=device-width, initial-scale=1.0'/>"
-    "<title>ESP32-C3 WiFi Config</title>"
-    "<style>"
-      "body{font-family:system-ui;background:#f5f5f5;margin:0;}"
-      ".c{max-width:560px;margin:40px auto;background:#fff;border:1px solid #ddd;border-radius:18px;padding:20px;}"
-      "h2{margin-top:0;}"
-      "h3{margin-bottom:5px;margin-top:22px;}"
-      "label{display:block;margin-top:10px;font-size:13px;color:#333;}"
-      "input,select{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #ccc;border-radius:10px;font-size:14px;}"
-      "button,a{display:block;width:100%;box-sizing:border-box;margin-top:12px;padding:12px;border-radius:12px;border:none;background:#111;color:#fff;"
-      "text-decoration:none;text-align:center;font-weight:800;font-size:14px;}"
-      "a{background:#6b7280;}"
-      ".red{background:#dc2626;}"
-      ".status{background:#f1f1f1;border-radius:12px;padding:10px;margin-bottom:12px;font-size:14px;}"
-      ".small{font-size:12px;color:#666;margin-top:5px;}"
-      ".line{height:1px;background:#e5e5e5;margin:22px 0;}"
-    "</style></head><body>"
-    "<div class='c'>"
-      "<h2>WiFi Setup</h2>"
-      "<div class='status'>Connected to ESP32 hotspot: <b>" + apSsid + "</b></div>"
-
-      "<form method='POST' action='/save'>"
-        "<h3>Router WiFi</h3>"
-        "<label>WiFi SSID</label>"
-        "<select name='ssid'>" + networksHTML + "</select>"
-
-        "<label>WiFi Password</label>"
-        "<input type='password' name='pass' placeholder='Enter router WiFi password'/>"
-
-        "<button type='submit'>Connect & Save Router WiFi</button>"
-      "</form>"
-
-      "<div class='line'></div>"
-
-      "<form method='POST' action='/save_ap'>"
-        "<h3>ESP32 Hotspot Settings</h3>"
-
-        "<label>ESP32 Hotspot Name</label>"
-        "<input type='text' name='ap_ssid' value='" + apSsid + "' placeholder='C3-Config'/>"
-
-        "<label>ESP32 Hotspot Password</label>"
-        "<input type='password' name='ap_pass' value='" + apPass + "' placeholder='Minimum 8 characters'/>"
-        "<div class='small'>Password must be at least 8 characters. This applies after reboot.</div>"
-
-        "<button type='submit'>Save Hotspot Name & Password</button>"
-      "</form>"
-
-      "<a href='/rescan'>Rescan Networks</a>"
-      "<a class='red' href='/reset' onclick=\"return confirm('Clear saved router WiFi?');\">Clear Saved Router WiFi</a>"
-    "</div>"
-    "</body></html>";
-
-  return html;
-}
-
-String buildConnectedHtml(const String &ssid, const String &ip) {
-  String html =
-    "<!DOCTYPE html><html lang='en'>"
-    "<head><meta charset='UTF-8'/>"
-    "<meta name='viewport' content='width=device-width, initial-scale=1.0'/>"
-    "<title>Connected</title>"
-    "<style>"
-      "body{font-family:system-ui;background:#f5f5f5;margin:0;}"
-      ".c{max-width:560px;margin:40px auto;background:#fff;border:1px solid #ddd;border-radius:18px;padding:20px;text-align:center;}"
-      "h2{margin-top:0;color:#16a34a;}"
-      "code{background:#f1f1f1;padding:4px 8px;border-radius:8px;}"
-      "a{display:block;width:100%;box-sizing:border-box;margin-top:12px;padding:12px;border-radius:12px;background:#111;color:#fff;"
-      "text-decoration:none;text-align:center;font-weight:800;font-size:14px;}"
-      ".gray{background:#6b7280;}"
-    "</style></head><body>"
-    "<div class='c'>"
-      "<h2>Connected ✅</h2>"
-      "<p>ESP32 successfully connected to router WiFi.</p>"
-      "<p><b>Router WiFi:</b> <code>" + ssid + "</code></p>"
-      "<p><b>ESP32 IP:</b> <code>" + ip + "</code></p>"
-      "<a href='http://" + ip + "/'>Open ESP32 Status Page</a>"
-      "<a class='gray' href='/'>Back to Config Page</a>"
-    "</div>"
-    "</body></html>";
-
-  return html;
-}
-
-String buildFailedHtml() {
-  String html =
-    "<!DOCTYPE html><html lang='en'>"
-    "<head><meta charset='UTF-8'/>"
-    "<meta name='viewport' content='width=device-width, initial-scale=1.0'/>"
-    "<title>Connection Failed</title>"
-    "<style>"
-      "body{font-family:system-ui;background:#f5f5f5;margin:0;}"
-      ".c{max-width:560px;margin:40px auto;background:#fff;border:1px solid #ddd;border-radius:18px;padding:20px;text-align:center;}"
-      "h2{margin-top:0;color:#dc2626;}"
-      "a{display:block;width:100%;box-sizing:border-box;margin-top:12px;padding:12px;border-radius:12px;background:#111;color:#fff;"
-      "text-decoration:none;text-align:center;font-weight:800;font-size:14px;}"
-    "</style></head><body>"
-    "<div class='c'>"
-      "<h2>Connection Failed ❌</h2>"
-      "<p>ESP32 could not connect to the selected router WiFi.</p>"
-      "<p>Please check the password and try again.</p>"
-      "<a href='/'>Try Again</a>"
-    "</div>"
-    "</body></html>";
-
-  return html;
-}
-
-String buildHotspotSavedHtml() {
-  String html =
-    "<!DOCTYPE html><html lang='en'>"
-    "<head><meta charset='UTF-8'/>"
-    "<meta name='viewport' content='width=device-width, initial-scale=1.0'/>"
-    "<title>Hotspot Updated</title>"
-    "<style>"
-      "body{font-family:system-ui;background:#f5f5f5;margin:0;}"
-      ".c{max-width:560px;margin:40px auto;background:#fff;border:1px solid #ddd;border-radius:18px;padding:20px;text-align:center;}"
-      "h2{margin-top:0;color:#16a34a;}"
-      "code{background:#f1f1f1;padding:4px 8px;border-radius:8px;}"
-    "</style></head><body>"
-    "<div class='c'>"
-      "<h2>Hotspot Updated ✅</h2>"
-      "<p>New ESP32 hotspot name/password saved.</p>"
-      "<p><b>New Hotspot Name:</b> <code>" + apSsid + "</code></p>"
-      "<p>The ESP32 will reboot now. Reconnect using the new hotspot password.</p>"
-    "</div>"
-    "</body></html>";
-
-  return html;
-}
-
-String buildHotspotPasswordErrorHtml() {
-  String html =
-    "<!DOCTYPE html><html lang='en'>"
-    "<head><meta charset='UTF-8'/>"
-    "<meta name='viewport' content='width=device-width, initial-scale=1.0'/>"
-    "<title>Password Too Short</title>"
-    "<style>"
-      "body{font-family:system-ui;background:#f5f5f5;margin:0;}"
-      ".c{max-width:560px;margin:40px auto;background:#fff;border:1px solid #ddd;border-radius:18px;padding:20px;text-align:center;}"
-      "h2{margin-top:0;color:#dc2626;}"
-      "a{display:block;width:100%;box-sizing:border-box;margin-top:12px;padding:12px;border-radius:12px;background:#111;color:#fff;"
-      "text-decoration:none;text-align:center;font-weight:800;font-size:14px;}"
-    "</style></head><body>"
-    "<div class='c'>"
-      "<h2>Password Too Short ❌</h2>"
-      "<p>ESP32 hotspot password must be at least 8 characters.</p>"
-      "<a href='/'>Go Back</a>"
-    "</div>"
-    "</body></html>";
-
-  return html;
-}
-
-String buildStatusHtml() {
-  String valveText = isValveOpen ? "OPEN / WATERING" : "CLOSED / IDLE";
-
-  String html =
-    "<!DOCTYPE html><html lang='en'>"
-    "<head><meta charset='UTF-8'/>"
-    "<meta name='viewport' content='width=device-width, initial-scale=1.0'/>"
-    "<title>ESP32-C3 Status</title>"
-    "<style>"
-      "body{font-family:system-ui;background:#f5f5f5;margin:0;}"
-      ".c{max-width:560px;margin:40px auto;background:#fff;border:1px solid #ddd;border-radius:18px;padding:20px;}"
-      "h2{margin-top:0;color:#16a34a;}"
-      "code{background:#f1f1f1;padding:3px 7px;border-radius:8px;}"
-      ".box{background:#f8fafc;border:1px solid #e5e7eb;border-radius:12px;padding:12px;margin-top:12px;}"
-      "a{display:block;width:100%;box-sizing:border-box;margin-top:12px;padding:12px;border-radius:12px;background:#dc2626;color:#fff;"
-      "text-decoration:none;text-align:center;font-weight:800;font-size:14px;}"
-    "</style></head><body>"
-    "<div class='c'>"
-      "<h2>ESP32 Connected ✅</h2>"
-      "<p><b>Router WiFi:</b> <code>" + WiFi.SSID() + "</code></p>"
-      "<p><b>ESP32 IP:</b> <code>" + WiFi.localIP().toString() + "</code></p>"
-      "<p><b>Saved Hotspot Name:</b> <code>" + apSsid + "</code></p>"
-
-      "<div class='box'>"
-        "<p><b>Django Mode:</b> <code>" + currentMode + "</code></p>"
-        "<p><b>Valve State:</b> <code>" + valveText + "</code></p>"
-        "<p><b>Auto Timer:</b> <code>" + String(autoClosedTime) + "s CLOSED / " + String(autoOpenTime) + "s OPEN</code></p>"
-        "<p><b>LED Simulation:</b> <code>" + String(USE_LED_SIMULATION ? "ON" : "OFF") + "</code></p>"
-        "<p><b>Real Relay:</b> <code>" + String(USE_REAL_RELAY ? "ON" : "OFF") + "</code></p>"
-      "</div>"
-
-      "<a href='/reset' onclick=\"return confirm('Clear saved router WiFi?');\">Clear Saved Router WiFi</a>"
-    "</div>"
-    "</body></html>";
-
-  return html;
-}
-
-// =====================================================
-// SERVER HANDLERS
-// =====================================================
-
-void handlePortal() {
-  server.send(200, "text/html", buildPortalHtml());
-}
-
-void handleStatusPage() {
-  server.send(200, "text/html", buildStatusHtml());
-}
-
-void handleRescan() {
-  buildNetworksList();
-  server.sendHeader("Location", "/", true);
-  server.send(302, "text/plain", "Rescanning...");
-}
-
-void handleSaveConfig() {
-  String ssid = server.arg("ssid");
-  String pass = server.arg("pass");
-
-  ssid.trim();
-  pass.trim();
-
-  if (ssid.length() == 0) {
-    server.send(200, "text/plain", "No router WiFi SSID selected.");
-    return;
-  }
-
-  bool ok = connectWiFiWith(ssid, pass, true);
-
-  if (ok) {
-    saveWifi(ssid, pass);
-
-    String ip = WiFi.localIP().toString();
-
-    server.send(200, "text/html", buildConnectedHtml(ssid, ip));
-
-    delay(3000);
-    ESP.restart();
-  } else {
-    server.send(200, "text/html", buildFailedHtml());
-  }
-}
-
-void handleSaveAP() {
-  String newApSsid = server.arg("ap_ssid");
-  String newApPass = server.arg("ap_pass");
-
-  newApSsid.trim();
-  newApPass.trim();
-
-  if (newApPass.length() < 8) {
-    server.send(200, "text/html", buildHotspotPasswordErrorHtml());
-    return;
-  }
-
-  saveApConfig(newApSsid, newApPass);
-
-  server.send(200, "text/html", buildHotspotSavedHtml());
-
-  delay(2500);
-  ESP.restart();
-}
-
-void handleReset() {
-  clearSavedWifi();
-
-  server.send(200, "text/plain", "Saved router WiFi cleared. Rebooting...");
-  delay(800);
-
-  ESP.restart();
-}
-
-void handleNotFound() {
-  if (inConfigMode) {
-    redirectToPortal();
-  } else {
-    server.send(404, "text/plain", "Not found");
-  }
-}
-
-// =====================================================
-// CONFIG AP MODE
-// =====================================================
-
-void startConfigAP() {
-  Serial.println("Starting config AP...");
-  inConfigMode = true;
-
-  updateWiFiLeds();
-  setValveOutput(false);
-
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.setSleep(false);
-
-  esp_wifi_set_ps(WIFI_PS_NONE);
-  esp_wifi_set_max_tx_power(78);
-
-  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-
-  bool apStarted = WiFi.softAP(apSsid.c_str(), apPass.c_str(), 1, 0, 4);
-
-  if (apStarted) {
-    Serial.println("ESP32 hotspot started.");
-  } else {
-    Serial.println("ESP32 hotspot failed to start.");
-  }
-
-  Serial.print("Hotspot SSID: ");
-  Serial.println(apSsid);
-  Serial.print("Hotspot Password: ");
+  Serial.print("Current hotspot password: ");
   Serial.println(apPass);
-  Serial.print("Hotspot IP: ");
-  Serial.println(apIP);
-
-  dns.start(DNS_PORT, "*", apIP);
-
-  buildNetworksList();
-
-  server.on("/", handlePortal);
-  server.on("/save", HTTP_POST, handleSaveConfig);
-  server.on("/save_ap", HTTP_POST, handleSaveAP);
-  server.on("/rescan", handleRescan);
-  server.on("/reset", handleReset);
-
-  server.on("/generate_204", redirectToPortal);
-  server.on("/gen_204", redirectToPortal);
-  server.on("/mobile/status.php", redirectToPortal);
-
-  server.on("/hotspot-detect.html", handlePortal);
-  server.on("/library/test/success.html", handlePortal);
-
-  server.on("/ncsi.txt", redirectToPortal);
-  server.on("/connecttest.txt", redirectToPortal);
-  server.on("/redirect", redirectToPortal);
-  server.on("/fwlink", redirectToPortal);
-
-  server.on("/success.txt", redirectToPortal);
-  server.on("/canonical.html", redirectToPortal);
-
-  server.onNotFound(handleNotFound);
-
-  server.begin();
-
-  Serial.println("Connect to ESP32 hotspot, then open:");
-  Serial.println("http://192.168.4.1/");
 }
 
-// =====================================================
-// CONNECTED MODE
-// =====================================================
+// =====================
+// DJANGO URL MEMORY
+// =====================
+void saveDjangoUrl(const String &url) {
+  prefs.begin("django", false);
+  prefs.putString("url", url);
+  prefs.end();
 
-void startConnectedServer() {
-  inConfigMode = false;
-  dns.stop();
+  djangoCommandUrl = url;
+  djangoCommandUrl.trim();
 
-  updateWiFiLeds();
-
-  server.on("/", handleStatusPage);
-  server.on("/reset", handleReset);
-  server.onNotFound(handleNotFound);
-
-  server.begin();
-
-  Serial.println("Status page started.");
-  Serial.print("Open: http://");
-  Serial.println(WiFi.localIP());
+  Serial.println("Django API URL saved:");
+  Serial.println(djangoCommandUrl);
 }
 
-// =====================================================
-// SIMPLE JSON PARSING
-// =====================================================
+void loadDjangoUrl() {
+  prefs.begin("django", true);
+  String savedUrl = prefs.getString("url", "");
+  prefs.end();
 
+  savedUrl.trim();
+
+  if (savedUrl.length() > 0) {
+    djangoCommandUrl = savedUrl;
+  }
+
+  Serial.print("Current Django API URL: ");
+  Serial.println(djangoCommandUrl);
+}
+
+// =====================
+// SIMPLE JSON PARSER
+// =====================
 String getJsonStringValue(String json, String key) {
   String searchKey = "\"" + key + "\"";
   int keyIndex = json.indexOf(searchKey);
-
   if (keyIndex == -1) return "";
 
   int colonIndex = json.indexOf(":", keyIndex);
@@ -726,21 +183,16 @@ String getJsonStringValue(String json, String key) {
 unsigned long getJsonNumberValue(String json, String key) {
   String searchKey = "\"" + key + "\":";
   int startIndex = json.indexOf(searchKey);
-
-  if (startIndex == -1) {
-    return 0;
-  }
+  if (startIndex == -1) return 0;
 
   startIndex += searchKey.length();
-  int endIndex = json.indexOf(",", startIndex);
 
+  int endIndex = json.indexOf(",", startIndex);
   if (endIndex == -1) {
     endIndex = json.indexOf("}", startIndex);
   }
 
-  if (endIndex == -1) {
-    return 0;
-  }
+  if (endIndex == -1) return 0;
 
   String value = json.substring(startIndex, endIndex);
   value.trim();
@@ -748,16 +200,310 @@ unsigned long getJsonNumberValue(String json, String key) {
   return value.toInt();
 }
 
-// =====================================================
-// DJANGO COMMAND FETCH
-// =====================================================
+// =====================
+// WIFI CONNECT
+// =====================
+void startAlwaysOnHotspot() {
+  WiFi.mode(WIFI_AP_STA);
 
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+
+  bool apStarted = WiFi.softAP(apSsid.c_str(), apPass.c_str());
+
+  if (apStarted) {
+    Serial.println("Always-on hotspot started.");
+    Serial.print("Hotspot name: ");
+    Serial.println(apSsid);
+    Serial.print("Hotspot password: ");
+    Serial.println(apPass);
+    Serial.println("Portal: http://192.168.4.1");
+  } else {
+    Serial.println("Failed to start hotspot.");
+  }
+
+  dnsServer.start(DNS_PORT, "*", apIP);
+}
+
+bool connectWiFi(const String &ssid, const String &pass) {
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(ssid);
+
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false);
+  WiFi.begin(ssid.c_str(), pass.c_str());
+
+  unsigned long startAttempt = millis();
+
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 15000) {
+    Serial.print(".");
+    delay(300);
+  }
+
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Router WiFi connected.");
+    Serial.print("ESP32 router IP: ");
+    Serial.println(WiFi.localIP());
+    return true;
+  }
+
+  Serial.println("Router WiFi failed.");
+  return false;
+}
+
+bool connectSavedWifi() {
+  String ssid, pass;
+
+  if (!loadWifi(ssid, pass)) {
+    Serial.println("No saved router WiFi.");
+    return false;
+  }
+
+  return connectWiFi(ssid, pass);
+}
+
+void reconnectWiFiIfNeeded() {
+  if (WiFi.status() == WL_CONNECTED) return;
+
+  unsigned long now = millis();
+
+  if (now - lastWifiReconnectAttempt < WIFI_RECONNECT_INTERVAL) return;
+
+  lastWifiReconnectAttempt = now;
+
+  Serial.println("Router WiFi disconnected. Keeping hotspot ON.");
+  Serial.println("Trying to reconnect to saved WiFi...");
+
+  currentMode = "OFF";
+  setRelay(false);
+
+  String ssid, pass;
+
+  if (loadWifi(ssid, pass)) {
+    WiFi.begin(ssid.c_str(), pass.c_str());
+  } else {
+    Serial.println("No saved WiFi. Use the hotspot portal to configure.");
+  }
+}
+
+// =====================
+// HTML STYLE
+// =====================
+String pageStyle() {
+  return
+    "<style>"
+    "body{font-family:Arial;background:#f3f4f6;margin:0;padding:20px;}"
+    ".card{max-width:460px;margin:auto;background:white;padding:20px;border-radius:14px;box-shadow:0 8px 20px rgba(0,0,0,.08);}"
+    "h2{text-align:center;margin-top:0;}"
+    "label{font-weight:bold;display:block;margin-top:12px;}"
+    "input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:8px;margin-top:6px;}"
+    "button,a{display:block;width:100%;box-sizing:border-box;margin-top:14px;padding:12px;border-radius:8px;border:0;text-align:center;text-decoration:none;font-weight:bold;}"
+    "button{background:#111827;color:white;}"
+    ".danger{background:#dc2626;color:white;}"
+    ".secondary{background:#2563eb;color:white;}"
+    ".green{background:#16a34a;color:white;}"
+    ".small{font-size:13px;color:#555;text-align:center;line-height:1.5;}"
+    "code{background:#eee;padding:3px 6px;border-radius:5px;word-break:break-all;}"
+    "</style>";
+}
+
+// =====================
+// HTML PAGES
+// =====================
+String portalPage() {
+  String routerStatus = WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED";
+  String routerIp = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No router IP";
+  String valveText = valveOpen ? "OPEN / WATERING" : "CLOSED / IDLE";
+
+  return
+    "<!doctype html>"
+    "<html>"
+    "<head>"
+    "<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
+    "<title>Irrigation Portal</title>"
+    + pageStyle() +
+    "</head>"
+    "<body>"
+    "<div class='card'>"
+    "<h2>Irrigation Portal</h2>"
+
+    "<p><b>Router WiFi:</b> <code>" + routerStatus + "</code></p>"
+    "<p><b>Router IP:</b> <code>" + routerIp + "</code></p>"
+    "<p><b>Hotspot IP:</b> <code>192.168.4.1</code></p>"
+    "<p><b>Hotspot Name:</b> <code>" + apSsid + "</code></p>"
+    "<p><b>Hotspot Password:</b> <code>" + apPass + "</code></p>"
+    "<p><b>Django API:</b><br><code>" + djangoCommandUrl + "</code></p>"
+    "<p><b>Mode:</b> <code>" + currentMode + "</code></p>"
+    "<p><b>Valve:</b> <code>" + valveText + "</code></p>"
+
+    "<hr>"
+
+    "<form method='POST' action='/save-wifi'>"
+    "<label>Router WiFi Name</label>"
+    "<input name='ssid' placeholder='Enter WiFi SSID' required>"
+
+    "<label>Router WiFi Password</label>"
+    "<input name='pass' type='password' placeholder='Enter WiFi password'>"
+
+    "<button type='submit'>Save Router WiFi and Restart</button>"
+    "</form>"
+
+    "<form method='POST' action='/save-api'>"
+    "<label>Change Django API URL</label>"
+    "<input name='django_url' value='" + djangoCommandUrl + "' required>"
+    "<button class='secondary' type='submit'>Save API URL</button>"
+    "</form>"
+
+    "<form method='POST' action='/save-hotspot'>"
+    "<label>Change ESP32 Hotspot Password</label>"
+    "<input id='apPassInput' name='ap_pass' type='password' value='" + apPass + "' minlength='8' required>"
+    "<button type='button' class='secondary' onclick='toggleApPassword()'>Show / Hide Password</button>"
+    "<button class='green' type='submit'>Save Hotspot Password and Restart</button>"
+    "</form>"
+
+    "<a class='danger' href='/clear'>Clear Saved Router WiFi</a>"
+    "</div>"
+    "<script>"
+    "function toggleApPassword(){"
+    "  var input=document.getElementById('apPassInput');"
+    "  if(input.type==='password'){"
+    "    input.type='text';"
+    "  }else{"
+    "    input.type='password';"
+    "  }"
+    "}"
+    "</script>"
+    "</body>"
+    "</html>";
+}
+
+// =====================
+// CAPTIVE PORTAL SUPPORT
+// =====================
+void redirectToPortal() {
+  server.sendHeader("Location", String("http://") + apIP.toString(), true);
+  server.send(302, "text/plain", "");
+}
+
+void handleCaptivePortal() {
+  redirectToPortal();
+}
+
+// =====================
+// SERVER HANDLERS
+// =====================
+void handleRoot() {
+  server.send(200, "text/html", portalPage());
+}
+
+void handleSaveWifi() {
+  String ssid = server.arg("ssid");
+  String pass = server.arg("pass");
+
+  ssid.trim();
+  pass.trim();
+
+  if (ssid.length() == 0) {
+    server.send(200, "text/plain", "No SSID entered.");
+    return;
+  }
+
+  saveWifi(ssid, pass);
+
+  server.send(
+    200,
+    "text/html",
+    "<h2>Router WiFi saved. Restarting...</h2><p>The ESP32 hotspot will turn on again after restart.</p>"
+  );
+
+  delay(1000);
+  ESP.restart();
+}
+
+void handleSaveApi() {
+  String newDjangoUrl = server.arg("django_url");
+  newDjangoUrl.trim();
+
+  if (newDjangoUrl.length() == 0) {
+    server.send(200, "text/plain", "No Django API URL entered.");
+    return;
+  }
+
+  saveDjangoUrl(newDjangoUrl);
+
+  server.sendHeader("Location", "/", true);
+  server.send(302, "text/plain", "");
+}
+
+void handleSaveHotspot() {
+  String newApPass = server.arg("ap_pass");
+  newApPass.trim();
+
+  if (newApPass.length() < 8) {
+    server.send(200, "text/plain", "Hotspot password must be at least 8 characters.");
+    return;
+  }
+
+  saveHotspotPassword(newApPass);
+
+  server.send(
+    200,
+    "text/html",
+    "<h2>Hotspot password saved. Restarting...</h2><p>Reconnect using the new hotspot password.</p>"
+  );
+
+  delay(1000);
+  ESP.restart();
+}
+
+void handleClear() {
+  clearWifi();
+
+  server.send(
+    200,
+    "text/html",
+    "<h2>Router WiFi cleared. Restarting...</h2><p>Use the ESP32 hotspot to configure WiFi again.</p>"
+  );
+
+  delay(1000);
+  ESP.restart();
+}
+
+void startServer() {
+  server.on("/", handleRoot);
+
+  server.on("/save-wifi", HTTP_POST, handleSaveWifi);
+  server.on("/save-api", HTTP_POST, handleSaveApi);
+  server.on("/save-hotspot", HTTP_POST, handleSaveHotspot);
+  server.on("/clear", handleClear);
+
+  // Android, Windows, and Apple captive portal checks
+  server.on("/generate_204", redirectToPortal);
+  server.on("/fwlink", redirectToPortal);
+  server.on("/hotspot-detect.html", redirectToPortal);
+  server.on("/library/test/success.html", redirectToPortal);
+  server.on("/ncsi.txt", redirectToPortal);
+  server.on("/connecttest.txt", redirectToPortal);
+
+  server.onNotFound(handleCaptivePortal);
+
+  server.begin();
+
+  Serial.println("Web server started.");
+}
+
+// =====================
+// DJANGO FETCH
+// =====================
 void fetchCommandFromDjango() {
   if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Router WiFi disconnected. Cannot ask Django.");
     return;
   }
 
   HTTPClient http;
+  http.setTimeout(3000);
 
   Serial.print("Asking Django: ");
   Serial.println(djangoCommandUrl);
@@ -772,181 +518,134 @@ void fetchCommandFromDjango() {
     Serial.println(payload);
 
     String newMode = getJsonStringValue(payload, "mode");
-    unsigned long newAutoClosedTime = getJsonNumberValue(payload, "auto_closed_time");
-    unsigned long newAutoOpenTime = getJsonNumberValue(payload, "auto_open_time");
+    unsigned long newClosedTime = getJsonNumberValue(payload, "auto_closed_time");
+    unsigned long newOpenTime = getJsonNumberValue(payload, "auto_open_time");
 
-    if (newAutoClosedTime > 0) {
-      autoClosedTime = newAutoClosedTime;
-    }
-
-    if (newAutoOpenTime > 0) {
-      autoOpenTime = newAutoOpenTime;
-    }
+    if (newClosedTime > 0) autoClosedTime = newClosedTime;
+    if (newOpenTime > 0) autoOpenTime = newOpenTime;
 
     if (newMode == "ON" || newMode == "OFF" || newMode == "AUTO") {
       if (newMode != currentMode) {
-        Serial.print("Mode changed to: ");
-        Serial.println(newMode);
-
         currentMode = newMode;
 
-        autoValveOpenPhase = false;
+        Serial.print("Mode changed to: ");
+        Serial.println(currentMode);
+
+        autoOpenPhase = false;
         autoPreviousMillis = millis();
 
         if (currentMode == "AUTO") {
-          setValveOutput(false);
-          Serial.println("AUTO: Starting CLOSED/IDLE phase");
+          setRelay(false);
+          Serial.println("AUTO: starting closed/waiting phase");
         }
       }
     }
 
-    Serial.print("Timer setting: ");
-    Serial.print(autoClosedTime);
-    Serial.print(" seconds CLOSED/OFF, ");
-    Serial.print(autoOpenTime);
-    Serial.println(" seconds OPEN/ON");
-
   } else {
-    Serial.print("Failed to contact Django. HTTP code: ");
+    Serial.print("Django request failed. HTTP code: ");
     Serial.println(httpCode);
   }
 
   http.end();
 }
 
-// =====================================================
+// =====================
 // MODE HANDLERS
-// =====================================================
-
+// =====================
 void handleForceMode() {
   if (currentMode == "ON") {
-    setValveOutput(true);
+    if (!valveOpen) setRelay(true);
   } else if (currentMode == "OFF") {
-    setValveOutput(false);
+    if (valveOpen) setRelay(false);
   }
 }
 
 void handleAutoMode() {
-  unsigned long currentMillis = millis();
-  unsigned long closedTimeMs = autoClosedTime * 1000UL;
-  unsigned long openTimeMs = autoOpenTime * 1000UL;
+  unsigned long now = millis();
 
-  if (!autoValveOpenPhase) {
-    // CLOSED / IDLE phase
-    if (currentMillis - autoPreviousMillis >= closedTimeMs) {
-      autoValveOpenPhase = true;
-      autoPreviousMillis = currentMillis;
-      setValveOutput(true);
+  unsigned long closedMs = autoClosedTime * 1000UL;
+  unsigned long openMs = autoOpenTime * 1000UL;
 
-      Serial.print("AUTO: Valve OPEN for ");
+  if (!autoOpenPhase) {
+    if (now - autoPreviousMillis >= closedMs) {
+      autoOpenPhase = true;
+      autoPreviousMillis = now;
+      setRelay(true);
+
+      Serial.print("AUTO: valve opened for ");
       Serial.print(autoOpenTime);
       Serial.println(" seconds");
     }
   } else {
-    // OPEN / WATERING phase
-    if (currentMillis - autoPreviousMillis >= openTimeMs) {
-      autoValveOpenPhase = false;
-      autoPreviousMillis = currentMillis;
-      setValveOutput(false);
+    if (now - autoPreviousMillis >= openMs) {
+      autoOpenPhase = false;
+      autoPreviousMillis = now;
+      setRelay(false);
 
-      Serial.print("AUTO: Valve CLOSED for ");
+      Serial.print("AUTO: valve closed for ");
       Serial.print(autoClosedTime);
       Serial.println(" seconds");
     }
   }
 }
 
-void handleDjangoControl() {
-  unsigned long currentMillis = millis();
+void handleControl() {
+  unsigned long now = millis();
 
-  if (currentMillis - lastDjangoPoll >= DJANGO_POLL_INTERVAL) {
-    lastDjangoPoll = currentMillis;
-    fetchCommandFromDjango();
-  }
+  if (WiFi.status() == WL_CONNECTED) {
+    if (now - lastDjangoPoll >= DJANGO_POLL_INTERVAL) {
+      lastDjangoPoll = now;
+      fetchCommandFromDjango();
+    }
 
-  if (currentMode == "AUTO") {
-    handleAutoMode();
+    if (currentMode == "AUTO") {
+      handleAutoMode();
+    } else {
+      handleForceMode();
+    }
   } else {
-    handleForceMode();
+    currentMode = "OFF";
+    setRelay(false);
   }
 }
 
-// =====================================================
+// =====================
 // SETUP / LOOP
-// =====================================================
-
+// =====================
 void setup() {
   Serial.begin(115200);
-  delay(600);
+  delay(500);
 
-  pinMode(WIFI_OK_LED_PIN, OUTPUT);
-  pinMode(WIFI_FAIL_LED_PIN, OUTPUT);
-
-#if USE_LED_SIMULATION
-  pinMode(SOLENOID_ON_LED_PIN, OUTPUT);
-  pinMode(SOLENOID_OFF_LED_PIN, OUTPUT);
-#endif
-
-#if USE_REAL_RELAY
   pinMode(RELAY_PIN, OUTPUT);
+  setRelay(false);
 
-  // Start relay OFF for safety
-  if (RELAY_ACTIVE_LOW) {
-    digitalWrite(RELAY_PIN, HIGH);
-  } else {
-    digitalWrite(RELAY_PIN, LOW);
-  }
-#endif
-
-  digitalWrite(WIFI_OK_LED_PIN, LOW);
-  digitalWrite(WIFI_FAIL_LED_PIN, LOW);
-
-  setValveOutput(false);
+  loadDjangoUrl();
+  loadHotspotPassword();
 
   Serial.println();
-  Serial.println("=== ESP32-C3 WiFi Captive Portal + Django Irrigation Control ===");
+  Serial.println("=== ESP32 Irrigation Controller with Always-On Portal ===");
 
-  Serial.print("LED Simulation: ");
-  Serial.println(USE_LED_SIMULATION ? "ON" : "OFF");
+  startAlwaysOnHotspot();
+  startServer();
 
-  Serial.print("Real Relay: ");
-  Serial.println(USE_REAL_RELAY ? "ON" : "OFF");
+  connectSavedWifi();
 
-  loadApConfig();
+  Serial.println();
+  Serial.println("Portal is always available at:");
+  Serial.println("http://192.168.4.1");
 
-  if (connectSavedWifi()) {
-    startConnectedServer();
-  } else {
-    startConfigAP();
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Also available through router IP:");
+    Serial.println(WiFi.localIP());
   }
-
-  updateWiFiLeds();
 }
 
 void loop() {
-  updateWiFiLeds();
-
-  if (inConfigMode) {
-    dns.processNextRequest();
-    server.handleClient();
-    delay(10);
-    return;
-  }
-
+  dnsServer.processNextRequest();
   server.handleClient();
 
-  handleDjangoControl();
+  reconnectWiFiIfNeeded();
+  handleControl();
 
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Router WiFi lost. Trying saved WiFi again...");
-
-    updateWiFiLeds();
-
-    if (!connectSavedWifi()) {
-      Serial.println("Reconnect failed. Starting config portal.");
-      startConfigAP();
-    }
-  }
-
-  delay(1000);
+  delay(20);
 }
