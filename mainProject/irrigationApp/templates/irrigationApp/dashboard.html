@@ -2,7 +2,6 @@
 <html>
   <head>
     <title>Irrigation Control</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover"
@@ -99,7 +98,8 @@
         margin-bottom: 6px;
       }
 
-      input {
+      input,
+      select {
         width: 100%;
         padding: 11px;
         box-sizing: border-box;
@@ -143,23 +143,17 @@
         border-radius: 5px;
       }
 
-      @media (max-width: 600px) {
-        body {
-          padding: 15px;
-        }
-
-        .container {
-          padding: 20px;
-        }
-
-        .button-row {
-          flex-direction: column;
-        }
-
-        button {
-          width: 100%;
-        }
+      .time-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 8px;
+        align-items: center;
       }
+
+      .time-row span {
+        font-weight: bold;
+      }
+
       @media (max-width: 600px) {
         body {
           padding: 10px;
@@ -197,7 +191,8 @@
           font-size: 15px;
         }
 
-        input {
+        input,
+        select {
           font-size: 16px;
           padding: 13px;
         }
@@ -211,24 +206,6 @@
         details {
           padding: 14px;
         }
-      }
-
-      .time-row {
-        display: grid;
-        grid-template-columns: 1fr 1fr auto;
-        gap: 8px;
-        align-items: center;
-      }
-
-      .time-row select {
-        padding: 11px;
-        border: 1px solid #ccc;
-        border-radius: 8px;
-        font-size: 15px;
-      }
-
-      .time-row span {
-        font-weight: bold;
       }
     </style>
   </head>
@@ -279,9 +256,8 @@
             required
           />
 
-          <!-- TESTING ONLY: uncomment this and comment out the hours input above -->
-
-          {% comment %} <label>Water Every (seconds) - Testing Only</label>
+          {% comment %}
+          <label>Water Every (seconds) - Testing Only</label>
           <input
             id="autoEvery"
             type="number"
@@ -302,16 +278,6 @@
             required
           />
 
-          {% comment %}
-          <p class="help-text">
-            Example: Water every
-            <span id="exampleEvery">{{ auto_closed_seconds }}</span>
-            seconds for
-            <span id="exampleFor">{{ control.auto_open_time }}</span>
-            seconds.
-          </p>
-          {% endcomment %}
-
           <p class="help-text">
             Example: Water every
             <span id="exampleEvery">{{ auto_closed_hours }}</span>
@@ -325,7 +291,9 @@
             watering, then closes again and repeats.
           </p>
 
-          <button class="btn-save" type="submit">Save Auto Settings</button>
+          <button class="btn-save" type="submit" name="mode" value="AUTO">
+            Save Auto Settings
+          </button>
         </div>
 
         <div class="card">
@@ -333,7 +301,12 @@
 
           <label>Morning Watering Time</label>
           <div class="time-row">
-            <select name="morning_hour" required>
+            <select
+              id="morningHourSelect"
+              name="morning_hour"
+              data-current="{{ morning_hour }}"
+              required
+            >
               <option value="01">01</option>
               <option value="02">02</option>
               <option value="03">03</option>
@@ -345,6 +318,7 @@
               <option value="09">09</option>
               <option value="10">10</option>
               <option value="11">11</option>
+              <option value="12">12</option>
             </select>
 
             <input
@@ -353,7 +327,6 @@
               min="0"
               max="59"
               value="{{ morning_minute }}"
-              onfocus="this.value = ''"
               required
             />
 
@@ -362,7 +335,12 @@
 
           <label>Afternoon Watering Time</label>
           <div class="time-row">
-            <select name="afternoon_hour" required>
+            <select
+              id="afternoonHourSelect"
+              name="afternoon_hour"
+              data-current="{{ afternoon_hour }}"
+              required
+            >
               <option value="12">12</option>
               <option value="01">01</option>
               <option value="02">02</option>
@@ -383,7 +361,6 @@
               min="0"
               max="59"
               value="{{ afternoon_minute }}"
-              onfocus="this.value = ''"
               required
             />
 
@@ -396,7 +373,6 @@
             name="manual_open_time"
             min="1"
             value="{{ control.manual_open_time }}"
-            onfocus="this.value = ''"
             required
           />
 
@@ -405,6 +381,7 @@
             and afternoon times. The action is: closed first, then open for
             watering, then closed again.
           </p>
+
           <p class="help-text">
             Current manual schedule: waters at
             <b>{{ control.manual_morning_time|time:'h:i A' }}</b>
@@ -415,7 +392,7 @@
             seconds.
           </p>
 
-          <button class="btn-save" type="submit">
+          <button class="btn-save" type="submit" name="mode" value="MANUAL">
             Save Manual Timer Settings
           </button>
         </div>
@@ -498,6 +475,21 @@
       window.addEventListener("load", () => {
         if (localStorage.getItem("debugOpen") === "true") {
           debugDetails.open = true;
+        }
+      });
+
+      window.addEventListener("load", () => {
+        const morningHourSelect = document.getElementById("morningHourSelect");
+        const afternoonHourSelect = document.getElementById(
+          "afternoonHourSelect",
+        );
+
+        if (morningHourSelect) {
+          morningHourSelect.value = morningHourSelect.dataset.current;
+        }
+
+        if (afternoonHourSelect) {
+          afternoonHourSelect.value = afternoonHourSelect.dataset.current;
         }
       });
     </script>

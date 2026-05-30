@@ -13,7 +13,7 @@ const bool RELAY_ACTIVE_LOW = true;
 // =====================
 // DJANGO SETTINGS
 // =====================
-String djangoCommandUrl = "http://10.141.92.83:8000/api/command/";
+String djangoCommandUrl = "https://irrigation-system-controller-using-esp32.onrender.com/api/command/";
 
 const unsigned long DJANGO_POLL_INTERVAL = 3000;
 unsigned long lastDjangoPoll = 0;
@@ -30,9 +30,6 @@ const byte DNS_PORT = 53;
 
 WebServer server(80);
 Preferences prefs;
-
-// The portal is now always active
-bool portalAlwaysOn = true;
 
 // =====================
 // WIFI RECONNECT SETTINGS
@@ -201,7 +198,7 @@ unsigned long getJsonNumberValue(String json, String key) {
 }
 
 // =====================
-// WIFI CONNECT
+// WIFI / HOTSPOT
 // =====================
 void startAlwaysOnHotspot() {
   WiFi.mode(WIFI_AP_STA);
@@ -288,6 +285,49 @@ void reconnectWiFiIfNeeded() {
 }
 
 // =====================
+// WIFI SCANNER HELPERS
+// =====================
+String htmlEscape(String text) {
+  text.replace("&", "&amp;");
+  text.replace("<", "&lt;");
+  text.replace(">", "&gt;");
+  text.replace("\"", "&quot;");
+  text.replace("'", "&#39;");
+  return text;
+}
+
+String wifiNetworkOptions() {
+  String options = "";
+
+  Serial.println("Scanning nearby WiFi networks...");
+  int networkCount = WiFi.scanNetworks();
+
+  if (networkCount <= 0) {
+    options += "<option value=''>No networks found</option>";
+  } else {
+    options += "<option value=''>Select nearby WiFi</option>";
+
+    for (int i = 0; i < networkCount; i++) {
+      String ssid = WiFi.SSID(i);
+      int rssi = WiFi.RSSI(i);
+      wifi_auth_mode_t encryption = WiFi.encryptionType(i);
+
+      if (ssid.length() == 0) continue;
+
+      String safeSsid = htmlEscape(ssid);
+      String lockText = encryption == WIFI_AUTH_OPEN ? "Open" : "Secured";
+
+      options += "<option value='" + safeSsid + "'>";
+      options += safeSsid + " (" + String(rssi) + " dBm, " + lockText + ")";
+      options += "</option>";
+    }
+  }
+
+  WiFi.scanDelete();
+  return options;
+}
+
+// =====================
 // HTML STYLE
 // =====================
 String pageStyle() {
@@ -297,7 +337,7 @@ String pageStyle() {
     ".card{max-width:460px;margin:auto;background:white;padding:20px;border-radius:14px;box-shadow:0 8px 20px rgba(0,0,0,.08);}"
     "h2{text-align:center;margin-top:0;}"
     "label{font-weight:bold;display:block;margin-top:12px;}"
-    "input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:8px;margin-top:6px;}"
+    "input,select{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:8px;margin-top:6px;}"
     "button,a{display:block;width:100%;box-sizing:border-box;margin-top:14px;padding:12px;border-radius:8px;border:0;text-align:center;text-decoration:none;font-weight:bold;}"
     "button{background:#111827;color:white;}"
     ".danger{background:#dc2626;color:white;}"
@@ -305,11 +345,12 @@ String pageStyle() {
     ".green{background:#16a34a;color:white;}"
     ".small{font-size:13px;color:#555;text-align:center;line-height:1.5;}"
     "code{background:#eee;padding:3px 6px;border-radius:5px;word-break:break-all;}"
+    "hr{border:0;border-top:1px solid #e5e7eb;margin:20px 0;}"
     "</style>";
 }
 
 // =====================
-// HTML PAGES
+// HTML PAGE
 // =====================
 String portalPage() {
   String routerStatus = WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED";
@@ -340,14 +381,26 @@ String portalPage() {
     "<hr>"
 
     "<form method='POST' action='/save-wifi'>"
+
+    "<label>Nearby WiFi Networks</label>"
+    "<select id='wifiSelect' onchange='selectWifiName()'>"
+    + wifiNetworkOptions() +
+    "</select>"
+
+    "<a class='secondary' href='/'>Scan Again</a>"
+
     "<label>Router WiFi Name</label>"
-    "<input name='ssid' placeholder='Enter WiFi SSID' required>"
+    "<input id='ssidInput' name='ssid' placeholder='Enter WiFi SSID' required>"
 
     "<label>Router WiFi Password</label>"
-    "<input name='pass' type='password' placeholder='Enter WiFi password'>"
+    "<input id='routerPassInput' name='pass' type='password' placeholder='Enter WiFi password'>"
+
+    "<button type='button' class='secondary' onclick='toggleRouterPassword()'>Show / Hide WiFi Password</button>"
 
     "<button type='submit'>Save Router WiFi and Restart</button>"
     "</form>"
+
+    "<hr>"
 
     "<form method='POST' action='/save-api'>"
     "<label>Change Django API URL</label>"
@@ -355,15 +408,18 @@ String portalPage() {
     "<button class='secondary' type='submit'>Save API URL</button>"
     "</form>"
 
+    "<hr>"
+
     "<form method='POST' action='/save-hotspot'>"
     "<label>Change ESP32 Hotspot Password</label>"
     "<input id='apPassInput' name='ap_pass' type='password' value='" + apPass + "' minlength='8' required>"
-    "<button type='button' class='secondary' onclick='toggleApPassword()'>Show / Hide Password</button>"
+    "<button type='button' class='secondary' onclick='toggleApPassword()'>Show / Hide Hotspot Password</button>"
     "<button class='green' type='submit'>Save Hotspot Password and Restart</button>"
     "</form>"
 
     "<a class='danger' href='/clear'>Clear Saved Router WiFi</a>"
     "</div>"
+
     "<script>"
     "function toggleApPassword(){"
     "  var input=document.getElementById('apPassInput');"
@@ -373,7 +429,25 @@ String portalPage() {
     "    input.type='password';"
     "  }"
     "}"
+
+    "function toggleRouterPassword(){"
+    "  var input=document.getElementById('routerPassInput');"
+    "  if(input.type==='password'){"
+    "    input.type='text';"
+    "  }else{"
+    "    input.type='password';"
+    "  }"
+    "}"
+
+    "function selectWifiName(){"
+    "  var select=document.getElementById('wifiSelect');"
+    "  var input=document.getElementById('ssidInput');"
+    "  if(select.value !== ''){"
+    "    input.value = select.value;"
+    "  }"
+    "}"
     "</script>"
+
     "</body>"
     "</html>";
 }
