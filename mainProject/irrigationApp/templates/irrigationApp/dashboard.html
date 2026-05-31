@@ -207,6 +207,38 @@
           padding: 14px;
         }
       }
+
+      .dev-tool-box {
+        margin-top: 14px;
+        padding: 16px;
+        border-radius: 12px;
+        background: #f9fafb;
+        border: 1px solid #e5e7eb;
+      }
+
+      .dev-tool-box h3 {
+        text-align: left;
+        margin: 0 0 8px;
+        font-size: 17px;
+      }
+
+      .dev-link-btn {
+        display: block;
+        width: 100%;
+        box-sizing: border-box;
+        margin-top: 12px;
+        padding: 12px;
+        border-radius: 8px;
+        background: #2563eb;
+        color: white;
+        text-align: center;
+        text-decoration: none;
+        font-weight: bold;
+      }
+
+      .dev-link-btn:hover {
+        background: #1d4ed8;
+      }
     </style>
   </head>
 
@@ -416,6 +448,33 @@
         </details>
       </form>
 
+      <details id="connectionSettings">
+        <summary>Connection Settings</summary>
+
+        <p class="help-text">
+          Use this section for ESP32 WiFi setup and connection troubleshooting.
+        </p>
+
+        <div class="dev-tool-box">
+          <h3>ESP32 WiFi Config Portal</h3>
+
+          <p class="help-text">
+            Open this only when you need to change the ESP32 WiFi connection.
+            This page works only when your phone or laptop is connected to the
+            ESP32 hotspot network.
+          </p>
+
+          <a href="http://192.168.4.1" target="_blank" class="dev-link-btn">
+            Open ESP32 Portal
+          </a>
+
+          <p class="help-text">
+            Hotspot name: <code>Irrigation-Config</code><br />
+            Portal address: <code>http://192.168.4.1</code>
+          </p>
+        </div>
+      </details>
+
       <div class="summary">
         <p>{{ auto_mode_text }}</p>
         <p>{{ manual_mode_text }}</p>
@@ -490,6 +549,21 @@
 
         if (afternoonHourSelect) {
           afternoonHourSelect.value = afternoonHourSelect.dataset.current;
+        }
+      });
+
+      const connectionSettings = document.getElementById("connectionSettings");
+
+      connectionSettings.addEventListener("toggle", () => {
+        localStorage.setItem(
+          "connectionSettingsOpen",
+          connectionSettings.open ? "true" : "false",
+        );
+      });
+
+      window.addEventListener("load", () => {
+        if (localStorage.getItem("connectionSettingsOpen") === "true") {
+          connectionSettings.open = true;
         }
       });
     </script>
