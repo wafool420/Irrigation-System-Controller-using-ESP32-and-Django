@@ -227,11 +227,20 @@ bool connectWiFi(const String &ssid, const String &pass) {
 
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(true);
+
+  // Fully reset station connection first
+  WiFi.disconnect(false, false);
+  delay(500);
+
   WiFi.begin(ssid.c_str(), pass.c_str());
 
   unsigned long startAttempt = millis();
 
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 15000) {
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 20000) {
+    dnsServer.processNextRequest();
+    server.handleClient();
     Serial.print(".");
     delay(300);
   }
@@ -246,6 +255,7 @@ bool connectWiFi(const String &ssid, const String &pass) {
   }
 
   Serial.println("Router WiFi failed.");
+  WiFi.disconnect(false, false);
   return false;
 }
 
@@ -278,6 +288,8 @@ void reconnectWiFiIfNeeded() {
   String ssid, pass;
 
   if (loadWifi(ssid, pass)) {
+    WiFi.disconnect(false, false);
+    delay(300);
     WiFi.begin(ssid.c_str(), pass.c_str());
   } else {
     Serial.println("No saved WiFi. Use the hotspot portal to configure.");
@@ -382,12 +394,7 @@ String portalPage() {
 
     "<form method='POST' action='/save-wifi'>"
 
-    "<label>Nearby WiFi Networks</label>"
-    "<select id='wifiSelect' onchange='selectWifiName()'>"
-    + wifiNetworkOptions() +
-    "</select>"
-
-    "<a class='secondary' href='/'>Scan Again</a>"
+    "<p class='small'>If the page does not open automatically, go to <b>http://192.168.4.1</b></p>"
 
     "<label>Router WiFi Name</label>"
     "<input id='ssidInput' name='ssid' placeholder='Enter WiFi SSID' required>"
@@ -436,14 +443,6 @@ String portalPage() {
     "    input.type='text';"
     "  }else{"
     "    input.type='password';"
-    "  }"
-    "}"
-
-    "function selectWifiName(){"
-    "  var select=document.getElementById('wifiSelect');"
-    "  var input=document.getElementById('ssidInput');"
-    "  if(select.value !== ''){"
-    "    input.value = select.value;"
     "  }"
     "}"
     "</script>"
@@ -559,6 +558,11 @@ void startServer() {
   server.on("/library/test/success.html", redirectToPortal);
   server.on("/ncsi.txt", redirectToPortal);
   server.on("/connecttest.txt", redirectToPortal);
+  server.on("/canonical.html", redirectToPortal);
+  server.on("/success.txt", redirectToPortal);
+  server.on("/redirect", redirectToPortal);
+  server.on("/mobile/status.php", redirectToPortal);
+  server.on("/kindle-wifi/wifistub.html", redirectToPortal);
 
   server.onNotFound(handleCaptivePortal);
 
